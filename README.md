@@ -3,7 +3,7 @@ A rust version of the [cocktail ingredient optimizer](https://observablehq.com/@
 Develop like:
 
 ```console
-> cat ingredients.csv | cargo run
+> cat ingredients.csv | cargo run --release
    Compiling cocktails-rust v0.1.0 (/Users/fgregg/Developer/cocktails-rust)
     Finished dev [unoptimized + debuginfo] target(s) in 0.68s
      Running `target/debug/cocktails-rust`

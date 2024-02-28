@@ -1,3 +1,4 @@
+use fxhash::FxHashMap;
 use std::cmp;
 use std::collections::{BTreeSet, HashMap};
 use std::io::BufRead;
@@ -23,9 +24,9 @@ fn read_cocktails() -> HashMap<Cocktail, String> {
         .collect()
 }
 
-fn amortized_cost<'a>(candidates: &'a [&'a Cocktail]) -> HashMap<&'a Cocktail, Cost> {
-    let mut costs = HashMap::new();
-    let mut cardinality = HashMap::new();
+fn amortized_cost<'a>(candidates: &'a [&'a Cocktail]) -> FxHashMap<&'a Cocktail, Cost> {
+    let mut costs = FxHashMap::default();
+    let mut cardinality = FxHashMap::default();
 
     for cocktail in candidates {
         for ingredient in cocktail.iter() {
@@ -46,7 +47,7 @@ fn amortized_cost<'a>(candidates: &'a [&'a Cocktail]) -> HashMap<&'a Cocktail, C
 
 fn singleton_bound(
     candidates: &[&Cocktail],
-    costs: &HashMap<&Cocktail, Cost>,
+    costs: &FxHashMap<&Cocktail, Cost>,
     ingredient_budget: usize,
 ) -> usize {
     let n_singular_cocktails = candidates.iter().filter(|x| costs[*x].singular).count();
