@@ -63,42 +63,38 @@ fn search(cocktails: &HashMap<Cocktail, String>, max_size: usize) -> Vec<&Cockta
 
     let costs = amortized_cost(&original_candidates);
 
-    let mut exploration_stack: Vec<(_, _, Vec<&Cocktail>)> =
-        vec![(original_candidates.clone(), vec![], vec![])];
+    let mut sorted_candidates = original_candidates.clone();
+    sorted_candidates.sort_by(|a, b| costs[*b].cost.total_cmp(&costs[*a].cost));
 
-    while let Some((candidates, partial, forbidden)) = exploration_stack.pop() {
+    let mut exploration_stack: Vec<(_, _, Vec<&Cocktail>)> =
+        vec![(sorted_candidates.clone(), vec![], vec![])];
+
+    while let Some((mut candidates, partial, forbidden)) = exploration_stack.pop() {
         let score = partial.len();
 
         if score > highest_score {
             highest_score = score;
             highest = partial.clone();
-            println!("{:#?}", highest_score);
+            println!(
+                "{:#?} cocktails found for {:#?} ingredients",
+                highest_score, max_size
+            );
         }
 
-        let threshold = highest_score - partial.len();
+        let threshold = highest_score - score;
         let partial_ingredients = partial.iter().fold(BTreeSet::new(), |acc, set| &acc | *set);
+        let disallowed = forbidden.iter().any(|x| partial_ingredients.is_superset(x));
 
-        if candidates.len() > threshold
+        if !disallowed
+            && candidates.len() > threshold
             && singleton_bound(&candidates, &costs, max_size - partial_ingredients.len())
                 > threshold
         {
-            if let Some(&best) = candidates
-                .iter()
-                .min_by(|a, b| costs[*a].cost.total_cmp(&costs[*b].cost))
-            {
+            if let Some(best) = candidates.pop() {
                 // The branch where we exclude the current best candidate.
 
-                // The filter condition is equivalent to
-                // !(&partial_ingredients | x).is_superset(best) but should
-                // be faster
-                let remaining_candidates: Vec<_> = candidates
-                    .iter()
-                    .filter(|x| !partial_ingredients.is_superset(&(best - x)))
-                    .cloned()
-                    .collect();
-
                 exploration_stack.push((
-                    remaining_candidates,
+                    candidates.clone(),
                     partial.clone(),
                     [forbidden.clone(), vec![best]].concat(),
                 ));
@@ -106,28 +102,18 @@ fn search(cocktails: &HashMap<Cocktail, String>, max_size: usize) -> Vec<&Cockta
                 // The branch that includes the current best candidate.
                 let new_partial_ingredients = &partial_ingredients | best;
 
-                let covered_candidates: Vec<_> = candidates
-                    .iter()
-                    .filter(|x| new_partial_ingredients.is_superset(x))
-                    .cloned()
-                    .collect();
-
                 let feasible_candidates: Vec<_> = candidates
                     .iter()
                     .filter(|x| {
-                        let prospective_ingredients = &new_partial_ingredients | x;
-                        prospective_ingredients.len() <= max_size
-                            && !forbidden
-                                .iter()
-                                .any(|y| prospective_ingredients.is_superset(y))
+                        new_partial_ingredients.len() + x.len() <= max_size
+                            || new_partial_ingredients.union(x).count() <= max_size
                     })
-                    .filter(|x| !new_partial_ingredients.is_superset(x))
                     .cloned()
                     .collect();
 
                 exploration_stack.push((
                     feasible_candidates,
-                    [partial, covered_candidates].concat(),
+                    [partial, vec![best]].concat(),
                     forbidden,
                 ));
             }
@@ -138,6 +124,6 @@ fn search(cocktails: &HashMap<Cocktail, String>, max_size: usize) -> Vec<&Cockta
 
 fn main() {
     let cocktails = read_cocktails();
-    let highest = search(&cocktails, 30);
+    let highest = search(&cocktails, 10);
     println!("{:#?}", highest.len());
 }
