@@ -1,17 +1,16 @@
 //use fxhash::{FxHashMap as HashMap, FxHashSet as HashSet};
-use indexical::bitset::simd::SimdBitset;
-use indexical::bitset::BitSet;
+use bitvec::prelude as bv;
 use std::cmp;
 use std::collections::{BTreeMap as HashMap, BTreeSet as HashSet};
 use std::io::BufRead;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct Cocktail<'a> {
     ingredients: Vec<&'a str>,
     name: String,
     cost: f32,
     singular: bool,
-    bitset: SimdBitset<u64, 4>,
+    bitset: bv::BitVec<u64>,
 }
 
 fn read_cocktails() -> Vec<(HashSet<String>, String)> {
@@ -31,7 +30,7 @@ fn read_cocktails() -> Vec<(HashSet<String>, String)> {
 fn amortized_cost(
     candidates: &[(HashSet<String>, String)],
     max_size: usize,
-) -> (SimdBitset<u64, 4>, Vec<Cocktail>) {
+) -> (bv::BitVec<u64>, Vec<Cocktail>) {
     let cardinality: HashMap<_, f32> = candidates
         .iter()
         .filter(|(ingredients, _)| ingredients.len() <= max_size)
@@ -47,17 +46,17 @@ fn amortized_cost(
         .map(|(idx, value)| (value.clone(), idx))
         .collect();
 
-    let base_bitset = SimdBitset::<u64, 4>::empty(domain.len());
-    //println!("Partial Ingredients: {:#?}", base_bitset.len());
+    let base_bitset = bv::bitvec![u64, bv::Lsb0; 0; domain.len()];
+    println!("Partial Ingredients: {:#?}", base_bitset);
 
     let mut cocktail_candidates: Vec<_> = candidates
         .iter()
         .filter(|(ingredients, _)| ingredients.len() <= max_size)
         .map(|(ingredients, name)| {
             let mut cocktail_bitset = base_bitset.clone();
-            ingredients.iter().for_each(|x| {
-                cocktail_bitset.insert(domain[x]);
-            });
+            ingredients
+                .iter()
+                .for_each(|x| cocktail_bitset.set(domain[x], true));
 
             Cocktail {
                 ingredients: ingredients.iter().map(|x| x.as_str()).collect(),
@@ -69,7 +68,7 @@ fn amortized_cost(
         })
         .collect();
     cocktail_candidates.sort_by(|a, b| b.cost.total_cmp(&a.cost));
-    //println!("{:#?}", cocktail_candidates);
+    println!("{:#?}", cocktail_candidates);
     (base_bitset, cocktail_candidates)
 }
 
@@ -86,18 +85,22 @@ fn search(cocktails: &[(HashSet<String>, String)], max_size: usize) -> Vec<Cockt
     let (base_bitset, candidates) = amortized_cost(cocktails, max_size);
     let candidates_ref: Vec<&Cocktail> = candidates.iter().collect();
 
-    let mut exploration_stack: Vec<(Vec<&Cocktail>, Vec<&Cocktail>, Vec<&Cocktail>)> =
-        vec![(candidates_ref, vec![], vec![])];
+    let mut exploration_stack: Vec<(
+        Vec<&Cocktail>,
+        Vec<&Cocktail>,
+        Vec<&Cocktail>,
+        bv::BitVec<u64>,
+    )> = vec![(candidates_ref, vec![], vec![], base_bitset.clone())];
 
-    while let Some((mut candidates, partial, forbidden)) = exploration_stack.pop() {
-        let mut partial_ingredients = base_bitset.clone();
-        partial
-            .iter()
-            .for_each(|x| partial_ingredients.union(&x.bitset));
-
-        let disallowed = forbidden
-            .iter()
-            .any(|x| partial_ingredients.superset(&x.bitset));
+    while let Some((mut candidates, partial, forbidden, partial_ingredients)) =
+        exploration_stack.pop()
+    {
+        let inverted_ingredients = !partial_ingredients.clone();
+        let disallowed = forbidden.iter().any(|x| {
+            let mut difference = x.bitset.clone();
+            difference &= &inverted_ingredients;
+            difference.count_ones() == 0
+        });
 
         if disallowed {
             continue;
@@ -117,35 +120,38 @@ fn search(cocktails: &[(HashSet<String>, String)], max_size: usize) -> Vec<Cockt
         let threshold = highest_score - score;
 
         if candidates.len() > threshold
-            && singleton_bound(&candidates, max_size - partial_ingredients.len()) > threshold
+            && singleton_bound(&candidates, max_size - partial_ingredients.count_ones()) > threshold
         {
             if let Some(best) = candidates.pop() {
-                // The branch where we exclude the current best candidate.
-
-                exploration_stack.push((
-                    candidates.clone(),
-                    partial.clone(),
-                    [forbidden.clone(), vec![best]].concat(),
-                ));
-
-                // The branch that includes the current best candidate.
                 let mut new_partial_ingredients = partial_ingredients.clone();
-                new_partial_ingredients.union(&best.bitset);
+                new_partial_ingredients |= &best.bitset;
 
                 let feasible_candidates: Vec<_> = candidates
                     .iter()
                     .filter(|x| {
-                        let mut extended_ingredients = new_partial_ingredients.clone();
-                        extended_ingredients.union(&x.bitset);
-                        extended_ingredients.len() <= max_size
+                        let mut union = new_partial_ingredients.clone();
+                        union |= &x.bitset;
+                        union.count_ones() <= max_size
                     })
                     .cloned()
                     .collect();
 
+                let mut new_partial = partial.clone();
+                new_partial.push(best);
+
+                let mut new_forbidden = forbidden.clone();
+                new_forbidden.push(best);
+
+                // The branch where we exclude the current best candidate.
+
+                exploration_stack.push((candidates, partial, new_forbidden, partial_ingredients));
+
+                // The branch that includes the current best candidate.
                 exploration_stack.push((
                     feasible_candidates,
-                    [partial, vec![best]].concat(),
+                    new_partial,
                     forbidden,
+                    new_partial_ingredients,
                 ));
             }
         }
@@ -156,5 +162,5 @@ fn search(cocktails: &[(HashSet<String>, String)], max_size: usize) -> Vec<Cockt
 fn main() {
     let cocktails = read_cocktails();
     let highest = search(&cocktails, 30);
-    //println!("{:#?}", highest);
+    println!("{:#?}", highest);
 }
