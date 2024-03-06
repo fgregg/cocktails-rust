@@ -1,5 +1,4 @@
-//use fxhash::{FxHashMap as HashMap, FxHashSet as HashSet};
-use bit_vec::BitVec;
+use roaring::RoaringBitmap;
 use std::cmp;
 use std::collections::{BTreeMap as HashMap, BTreeSet as HashSet};
 use std::io::BufRead;
@@ -10,7 +9,7 @@ struct Cocktail<'a> {
     name: String,
     cost: f32,
     singular: bool,
-    bitset: BitVec,
+    bitset: RoaringBitmap,
 }
 
 fn read_cocktails() -> Vec<(HashSet<String>, String)> {
@@ -27,10 +26,7 @@ fn read_cocktails() -> Vec<(HashSet<String>, String)> {
         .collect()
 }
 
-fn amortized_cost(
-    candidates: &[(HashSet<String>, String)],
-    max_size: usize,
-) -> (BitVec, Vec<Cocktail>) {
+fn amortized_cost(candidates: &[(HashSet<String>, String)], max_size: usize) -> Vec<Cocktail> {
     let cardinality: HashMap<_, f32> = candidates
         .iter()
         .filter(|(ingredients, _)| ingredients.len() <= max_size)
@@ -40,24 +36,20 @@ fn amortized_cost(
             acc
         });
 
-    let domain: HashMap<_, _> = cardinality
+    let domain: HashMap<_, u32> = cardinality
         .keys()
         .enumerate()
-        .map(|(idx, value)| (value.clone(), idx))
+        .map(|(idx, value)| (value.clone(), idx as u32))
         .collect();
-
-    //let base_bitset = bv::bitvec![usize, bv::Lsb0; 0; domain.len()];
-    let base_bitset = BitVec::from_elem(domain.len(), false);
-    println!("Partial Ingredients: {:#?}", base_bitset);
 
     let mut cocktail_candidates: Vec<_> = candidates
         .iter()
         .filter(|(ingredients, _)| ingredients.len() <= max_size)
         .map(|(ingredients, name)| {
-            let mut cocktail_bitset = base_bitset.clone();
-            ingredients
-                .iter()
-                .for_each(|x| cocktail_bitset.set(domain[x], true));
+            let mut cocktail_bitset = RoaringBitmap::new();
+            ingredients.iter().for_each(|x| {
+                cocktail_bitset.insert(domain[x]);
+            });
 
             Cocktail {
                 ingredients: ingredients.iter().map(|x| x.as_str()).collect(),
@@ -69,7 +61,7 @@ fn amortized_cost(
         })
         .collect();
     cocktail_candidates.sort_by(|a, b| b.cost.total_cmp(&a.cost));
-    (base_bitset, cocktail_candidates)
+    cocktail_candidates
 }
 
 fn singleton_bound(candidates: &[&Cocktail], ingredient_budget: usize) -> usize {
@@ -78,31 +70,29 @@ fn singleton_bound(candidates: &[&Cocktail], ingredient_budget: usize) -> usize 
     candidates.len() - n_singular_cocktails + cmp::min(n_singular_cocktails, ingredient_budget)
 }
 
+fn forbidden_bound(forbidden: &[&Cocktail], partial_ingredients: &RoaringBitmap) -> bool {
+    !forbidden
+        .iter()
+        .any(|x| x.bitset.is_subset(partial_ingredients))
+}
+
 fn search(cocktails: &[(HashSet<String>, String)], max_size: usize) -> Vec<Cocktail> {
     let mut highest_score = 0;
     let mut highest: Vec<&Cocktail> = vec![];
 
-    let (base_bitset, candidates) = amortized_cost(cocktails, max_size);
+    let candidates = amortized_cost(cocktails, max_size);
     let candidates_ref: Vec<&Cocktail> = candidates.iter().collect();
 
-    let mut exploration_stack: Vec<(Vec<&Cocktail>, Vec<&Cocktail>, Vec<&Cocktail>, BitVec<_>)> =
-        vec![(candidates_ref, vec![], vec![], base_bitset.clone())];
+    let mut exploration_stack: Vec<(
+        Vec<&Cocktail>,
+        Vec<&Cocktail>,
+        Vec<&Cocktail>,
+        RoaringBitmap,
+    )> = vec![(candidates_ref, vec![], vec![], RoaringBitmap::new())];
 
     while let Some((mut candidates, partial, forbidden, partial_ingredients)) =
         exploration_stack.pop()
     {
-        // check that a forbidden cocktail is not posisble to make with
-        // our current ingredients
-        let disallowed = forbidden.iter().any(|x| {
-            let mut difference = x.bitset.clone();
-            difference.difference(&partial_ingredients);
-            difference.none()
-        });
-
-        if disallowed {
-            continue;
-        }
-
         let score = partial.len();
 
         if score > highest_score {
@@ -117,29 +107,19 @@ fn search(cocktails: &[(HashSet<String>, String)], max_size: usize) -> Vec<Cockt
         let threshold = highest_score - score;
 
         if candidates.len() > threshold
-            && singleton_bound(
-                &candidates,
-                max_size
-                    - partial_ingredients
-                        .blocks()
-                        .map(|x| x.count_ones() as usize)
-                        .sum::<usize>(),
-            ) > threshold
+            && singleton_bound(&candidates, max_size - partial_ingredients.len() as usize)
+                > threshold
+            && forbidden_bound(&forbidden, &partial_ingredients)
         {
             if let Some(best) = candidates.pop() {
-                let mut new_partial_ingredients = partial_ingredients.clone();
-                new_partial_ingredients.or(&best.bitset);
+                let new_partial_ingredients = &partial_ingredients | &best.bitset;
+                let window = max_size as u64 - new_partial_ingredients.len();
 
                 let feasible_candidates: Vec<_> = candidates
                     .iter()
                     .filter(|x| {
-                        let mut union = new_partial_ingredients.clone();
-                        union.or(&x.bitset);
-                        union
-                            .blocks()
-                            .map(|x| x.count_ones() as usize)
-                            .sum::<usize>()
-                            <= max_size
+                        x.bitset.len() <= window
+                            || x.bitset.difference_len(&new_partial_ingredients) <= window
                     })
                     .cloned()
                     .collect();
@@ -151,7 +131,6 @@ fn search(cocktails: &[(HashSet<String>, String)], max_size: usize) -> Vec<Cockt
                 new_forbidden.push(best);
 
                 // The branch where we exclude the current best candidate.
-
                 exploration_stack.push((candidates, partial, new_forbidden, partial_ingredients));
 
                 // The branch that includes the current best candidate.
@@ -170,5 +149,5 @@ fn search(cocktails: &[(HashSet<String>, String)], max_size: usize) -> Vec<Cockt
 fn main() {
     let cocktails = read_cocktails();
     let highest = search(&cocktails, 30);
-    println!("{:#?}", highest);
+    //println!("{:#?}", highest);
 }
