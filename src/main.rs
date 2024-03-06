@@ -1,5 +1,5 @@
 //use fxhash::{FxHashMap as HashMap, FxHashSet as HashSet};
-use bitvec::prelude as bv;
+use bit_vec::BitVec;
 use std::cmp;
 use std::collections::{BTreeMap as HashMap, BTreeSet as HashSet};
 use std::io::BufRead;
@@ -10,7 +10,7 @@ struct Cocktail<'a> {
     name: String,
     cost: f32,
     singular: bool,
-    bitset: bv::BitVec<u64>,
+    bitset: BitVec,
 }
 
 fn read_cocktails() -> Vec<(HashSet<String>, String)> {
@@ -30,7 +30,7 @@ fn read_cocktails() -> Vec<(HashSet<String>, String)> {
 fn amortized_cost(
     candidates: &[(HashSet<String>, String)],
     max_size: usize,
-) -> (bv::BitVec<u64>, Vec<Cocktail>) {
+) -> (BitVec, Vec<Cocktail>) {
     let cardinality: HashMap<_, f32> = candidates
         .iter()
         .filter(|(ingredients, _)| ingredients.len() <= max_size)
@@ -46,7 +46,8 @@ fn amortized_cost(
         .map(|(idx, value)| (value.clone(), idx))
         .collect();
 
-    let base_bitset = bv::bitvec![u64, bv::Lsb0; 0; domain.len()];
+    //let base_bitset = bv::bitvec![usize, bv::Lsb0; 0; domain.len()];
+    let base_bitset = BitVec::from_elem(domain.len(), false);
     println!("Partial Ingredients: {:#?}", base_bitset);
 
     let mut cocktail_candidates: Vec<_> = candidates
@@ -68,7 +69,6 @@ fn amortized_cost(
         })
         .collect();
     cocktail_candidates.sort_by(|a, b| b.cost.total_cmp(&a.cost));
-    println!("{:#?}", cocktail_candidates);
     (base_bitset, cocktail_candidates)
 }
 
@@ -85,21 +85,18 @@ fn search(cocktails: &[(HashSet<String>, String)], max_size: usize) -> Vec<Cockt
     let (base_bitset, candidates) = amortized_cost(cocktails, max_size);
     let candidates_ref: Vec<&Cocktail> = candidates.iter().collect();
 
-    let mut exploration_stack: Vec<(
-        Vec<&Cocktail>,
-        Vec<&Cocktail>,
-        Vec<&Cocktail>,
-        bv::BitVec<u64>,
-    )> = vec![(candidates_ref, vec![], vec![], base_bitset.clone())];
+    let mut exploration_stack: Vec<(Vec<&Cocktail>, Vec<&Cocktail>, Vec<&Cocktail>, BitVec<_>)> =
+        vec![(candidates_ref, vec![], vec![], base_bitset.clone())];
 
     while let Some((mut candidates, partial, forbidden, partial_ingredients)) =
         exploration_stack.pop()
     {
-        let inverted_ingredients = !partial_ingredients.clone();
+        // check that a forbidden cocktail is not posisble to make with
+        // our current ingredients
         let disallowed = forbidden.iter().any(|x| {
             let mut difference = x.bitset.clone();
-            difference &= &inverted_ingredients;
-            difference.count_ones() == 0
+            difference.difference(&partial_ingredients);
+            difference.none()
         });
 
         if disallowed {
@@ -120,18 +117,29 @@ fn search(cocktails: &[(HashSet<String>, String)], max_size: usize) -> Vec<Cockt
         let threshold = highest_score - score;
 
         if candidates.len() > threshold
-            && singleton_bound(&candidates, max_size - partial_ingredients.count_ones()) > threshold
+            && singleton_bound(
+                &candidates,
+                max_size
+                    - partial_ingredients
+                        .blocks()
+                        .map(|x| x.count_ones() as usize)
+                        .sum::<usize>(),
+            ) > threshold
         {
             if let Some(best) = candidates.pop() {
                 let mut new_partial_ingredients = partial_ingredients.clone();
-                new_partial_ingredients |= &best.bitset;
+                new_partial_ingredients.or(&best.bitset);
 
                 let feasible_candidates: Vec<_> = candidates
                     .iter()
                     .filter(|x| {
                         let mut union = new_partial_ingredients.clone();
-                        union |= &x.bitset;
-                        union.count_ones() <= max_size
+                        union.or(&x.bitset);
+                        union
+                            .blocks()
+                            .map(|x| x.count_ones() as usize)
+                            .sum::<usize>()
+                            <= max_size
                     })
                     .cloned()
                     .collect();
